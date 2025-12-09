@@ -42,6 +42,49 @@ def subjects_get(sid):
 
     return jsonify(row)
 
+
+
+@app.post("/subjects")
+def subjects_create():
+    data = request.get_json()
+    
+    if not data or "name" not in data:
+        return jsonify({"error": "missing field 'name'"}), 400
+    
+    name = data.get("name")
+    description = data.get("description", "")
+    
+    conn = get_db()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    
+    try:
+        # Проверяем, существует ли уже предмет с таким названием
+        cur.execute("SELECT id FROM subjects WHERE name ILIKE %s", (name,))
+        existing = cur.fetchone()
+        
+        if existing:
+            return jsonify({"error": "subject with this name already exists"}), 409
+        
+        # Создаем новый предмет
+        cur.execute(
+            "INSERT INTO subjects (name, description) VALUES (%s, %s) RETURNING *",
+            (name, description)
+        )
+        
+        new_subject = cur.fetchone()
+        conn.commit()
+        
+        cur.close()
+        conn.close()
+        
+        return jsonify(new_subject), 201
+        
+    except Exception as e:
+        conn.rollback()
+        cur.close()
+        conn.close()
+        return jsonify({"error": str(e)}), 500
+
 @app.get("/subjects/by_name")
 def subjects_get_by_name():
     name = request.args.get("name")
