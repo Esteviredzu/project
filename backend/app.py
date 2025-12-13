@@ -1,8 +1,15 @@
 import os
+from datetime import datetime
 import psycopg2
 import psycopg2.extras
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
+from flask import Flask, request, jsonify
+from flask_jwt_extended import create_access_token
+import psycopg2
+from dotenv import load_dotenv
+import os
+
 
 load_dotenv()
 
@@ -47,38 +54,38 @@ def subjects_get(sid):
 @app.post("/subjects")
 def subjects_create():
     data = request.get_json()
-    
+
     if not data or "name" not in data:
         return jsonify({"error": "missing field 'name'"}), 400
-    
+
     name = data.get("name")
     description = data.get("description", "")
-    
+
     conn = get_db()
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    
+
     try:
         # Проверяем, существует ли уже предмет с таким названием
         cur.execute("SELECT id FROM subjects WHERE name ILIKE %s", (name,))
         existing = cur.fetchone()
-        
+
         if existing:
             return jsonify({"error": "subject with this name already exists"}), 409
-        
+
         # Создаем новый предмет
         cur.execute(
             "INSERT INTO subjects (name, description) VALUES (%s, %s) RETURNING *",
             (name, description)
         )
-        
+
         new_subject = cur.fetchone()
         conn.commit()
-        
+
         cur.close()
         conn.close()
-        
+
         return jsonify(new_subject), 201
-        
+
     except Exception as e:
         conn.rollback()
         cur.close()
@@ -274,6 +281,50 @@ def services_bulk():
 @app.get("/")
 def index():
     return jsonify({"status": "ok", "routes": ["/services", "/subjects"]})
+
+@app.post("/auth/telegram/confirm")
+def confirm_telegram_auth():
+    data = request.json
+    code = data.get("code")
+    telegram_id = data.get("telegram_id")
+
+    # Получаем запрос на авторизацию по коду
+    conn = get_db()
+    cur = conn.cursor()
+
+    cur.execute("SELECT * FROM auth_requests WHERE id = %s AND telegram_id = %s", (code, telegram_id))
+    auth_request = cur.fetchone()
+
+    if not auth_request or auth_request[2] == 'confirmed':  # Проверяем статус
+        return jsonify({"error": "Invalid or already confirmed request"}), 400
+
+    if auth_request[4] < datetime.utcnow():  # Проверяем, не истек ли срок
+        return jsonify({"error": "Request expired"}), 400
+
+    # Подтверждаем авторизацию
+    cur.execute("UPDATE auth_requests SET status = 'confirmed' WHERE id = %s", (code,))
+    conn.commit()
+
+    # Генерируем JWT токен для пользователя
+    cur.execute("SELECT * FROM users WHERE telegram_id = %s", (telegram_id,))
+    user = cur.fetchone()
+
+    if not user:
+        # Если пользователя нет, создаем его
+        cur.execute("""
+            INSERT INTO users (telegram_id, username, first_name, last_name)
+            VALUES (%s, %s, %s, %s) RETURNING *""",
+            (telegram_id, data.get("username"), data.get("first_name"), data.get("last_name"))
+        )
+        user = cur.fetchone()
+        conn.commit()
+
+    access_token = create_access_token(identity=user[0])  # Генерация токена
+
+    cur.close()
+    conn.close()
+
+    return jsonify({"token": access_token, "user": user}), 200
 
 
 if __name__ == "__main__":
